@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Generated gRPC code (rebuilt from the .proto)
+common/proto/*_pb2.py
+common/proto/*_pb2_grpc.py
+common/proto/*_pb2.pyi
+
+# Data and results
+data/input/*
+data/output/*
+!data/input/.gitkeep
+!data/output/.gitkeep
+benchmarks/results/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
