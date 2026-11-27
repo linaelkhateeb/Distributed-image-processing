@@ -1,5 +1,6 @@
 numpy>=1.26
 opencv-python>=4.9
+pillow>=11.2   # fallback decoder for formats OpenCV can't read (AVIF)
 grpcio>=1.62
 grpcio-tools>=1.62
 matplotlib>=3.8

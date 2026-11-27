@@ -54,10 +54,10 @@ understand it.
 - [x] 3. `.gitignore`, minimal README
 
 ### Phase 1 — Image processing core, single machine (≈1–1.5 h)
-- [ ] 4. Filters (`filters.py`): grayscale, invert, Gaussian blur, sharpen, Sobel edges, median. Each filter declares its kernel radius (the halo it needs).
-- [ ] 5. Tiling (`tiling.py`): `split(image, tile_size, halo)` returns tiles with coordinates and halo; `merge(tiles)` crops each halo and places the tile. Handles edge tiles and sizes that aren't multiples of the tile size.
-- [ ] 6. Sequential baseline (`sequential.py`): load, filter, save, time.
-- [ ] 7. Correctness tests: split → filter → merge must equal the sequential output pixel for pixel, for every filter, several tile sizes and odd image sizes. **Most important test in the project.**
+- [x] 4. Filters (`filters.py`): grayscale, invert, Gaussian blur, sharpen, Sobel edges, median, plus `blur_heavy` (31x31, large halo) and `median_heavy` (15x15, expensive) for experiments. Each filter declares its kernel radius (the halo it needs).
+- [x] 5. Tiling (`tiling.py`): `split(image, tile_size, halo)` returns tiles with coordinates and halo; `crop_halo` + `merge` put the cores back. Handles edge tiles and sizes that aren't multiples of the tile size.
+- [x] 6. Sequential baseline (`sequential.py`): load, filter, save, time (warm-up run, OpenCV limited to 1 thread). Also `make_sample.py` to generate a test image.
+- [x] 7. Correctness tests: split → filter → merge equals the sequential output pixel for pixel, for every filter, 5 tile sizes and 3 image shapes; plus a test showing that without the halo, neighbourhood filters produce seams. 190 tests pass.
 
 ### Phase 2 — Distributed system, happy path (≈2–3 h)
 - [ ] 8. gRPC interface (`image_service.proto`):

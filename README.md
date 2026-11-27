@@ -21,16 +21,49 @@ See [PLAN.md](PLAN.md) for the full design and build steps.
 
 ## Setup (Windows, PowerShell)
 
+Create the virtual environment from your own terminal (not from inside another tool), so it points
+at a Python installation your terminal can see. Python 3.11 or newer works; this project is set up
+with 3.14:
+
 ```powershell
-python -m venv .venv   # Python 3.11+
+py -3.14 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
+
+If activation or `python` fails with "No Python at ...", the `.venv` was built with a Python that
+no longer exists. Delete it and create it again:
+
+```powershell
+deactivate
+Remove-Item -Recurse -Force .venv
+py -3.14 -m venv .venv
+```
+
+Every command below assumes the venv is active (your prompt starts with `(.venv)`).
+
+Images: OpenCV reads PNG/JPEG/BMP/TIFF/WebP; other formats such as AVIF are read through Pillow.
 
 Run tests:
 
 ```powershell
 pytest
 ```
+
+## Sequential baseline
+
+Generate a 4000x3000 test image, then filter it on one machine:
+
+```powershell
+python -m baseline.make_sample data/input/sample.png
+python -m baseline.sequential data/input/sample.png data/output/blur.png --filter blur --tile-size 256
+```
+
+`--tile-size` also runs the tiled pipeline in one process and checks it matches the sequential
+result. OpenCV is limited to 1 thread by default (`--threads` to change), so the baseline is
+truly sequential.
+
+Filters: `grayscale`, `invert`, `blur`, `blur_heavy`, `sharpen`, `sobel`, `median`,
+`median_heavy`.
 
 Run instructions for the coordinator, workers and client will be added as they are built.
