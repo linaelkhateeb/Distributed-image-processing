@@ -98,6 +98,21 @@ python -m client.cli submit data/input/sample.png --filter median_heavy --tile-s
 and a before/after image in `data/output/`, and with `--verify` checks the result against the
 sequential version. Add `--coordinator HOST[:PORT]` when the coordinator is on another machine.
 
+### Fault tolerance
+
+Workers send a heartbeat every 2 s. A worker silent for 6 s is suspected dead and the tiles it
+was holding are re-sent to other workers. A tile held for more than 30 s is re-sent even if its
+worker is alive. Each tile has a fixed task id, so if two copies come back the first one wins.
+A tile that fails 3 times fails its job. Coordinator options: `--heartbeat-interval`,
+`--heartbeat-timeout`, `--lease-timeout`, `--max-attempts`.
+
+Try it: start a few workers, one of them with `--crash-after 20` (it dies abruptly while holding a
+tile), and/or close a worker's terminal while a job runs. The job still finishes, `submit` reports
+how many tiles were re-sent, and `--verify` confirms the result. `client.cli workers` shows the
+failed workers as `SUSPECT`. `--slow 0.05` makes a worker a straggler.
+
+The coordinator itself is a single point of failure: if it stops, running jobs are lost.
+
 ### Several machines
 
 All machines on the same network, each with the project and venv set up. On the coordinator

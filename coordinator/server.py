@@ -63,6 +63,11 @@ class CoordinatorServicer(pb_grpc.CoordinatorServicer):
         )
 
     def SubmitResult(self, request, context):
+        if request.error:
+            self.scheduler.report_failure(
+                request.worker_id, request.job_id, request.tile_index, request.error
+            )
+            return pb.SubmitReply(accepted=False)
         accepted = self.scheduler.submit_result(
             request.worker_id,
             request.job_id,
@@ -98,6 +103,7 @@ class CoordinatorServicer(pb_grpc.CoordinatorServicer):
             merge_seconds=job.merge_seconds,
             total_seconds=job.total_seconds,
             error=job.error,
+            reassigned_tiles=job.reassigned_tiles,
         )
 
     def GetResult(self, request, context):
@@ -126,8 +132,13 @@ class CoordinatorServicer(pb_grpc.CoordinatorServicer):
 def serve(
     port: int = DEFAULT_PORT, scheduler: Scheduler | None = None, max_threads: int = 32
 ) -> Tuple[grpc.Server, Scheduler, int]:
-    """Start the server (non-blocking). ``port=0`` picks a free port. Returns the bound port."""
+    """Start the server and the failure detector (non-blocking).
+
+    ``port=0`` picks a free port. Returns (server, scheduler, bound port). Call
+    ``scheduler.stop()`` after ``server.stop()`` to stop the failure detector.
+    """
     scheduler = scheduler or Scheduler()
+    scheduler.start_monitor()
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=max_threads),
                          options=GRPC_OPTIONS)
     pb_grpc.add_CoordinatorServicer_to_server(CoordinatorServicer(scheduler), server)
@@ -149,13 +160,22 @@ def _local_ips() -> list[str]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the coordinator.")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--heartbeat-interval", type=float, default=2.0)
-    parser.add_argument("--heartbeat-timeout", type=float, default=6.0)
+    parser.add_argument("--heartbeat-interval", type=float, default=2.0,
+                        help="seconds between worker heartbeats (default 2)")
+    parser.add_argument("--heartbeat-timeout", type=float, default=6.0,
+                        help="seconds of silence before a worker is suspected dead (default 6)")
+    parser.add_argument("--lease-timeout", type=float, default=30.0,
+                        help="seconds a worker may hold one tile before it is re-sent "
+                             "(default 30)")
+    parser.add_argument("--max-attempts", type=int, default=3,
+                        help="times a tile is handed out before its job fails (default 3)")
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s",
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s.%(msecs)03d %(name)s: %(message)s",
                         datefmt="%H:%M:%S")
-    scheduler = Scheduler(args.heartbeat_interval, args.heartbeat_timeout)
+    scheduler = Scheduler(args.heartbeat_interval, args.heartbeat_timeout,
+                          args.lease_timeout, args.max_attempts)
     server, _, port = serve(args.port, scheduler)
     ips = ", ".join(f"{ip}:{port}" for ip in _local_ips()) or f"<this machine>:{port}"
     log.info("Coordinator listening on port %d. Workers can connect to: %s", port, ips)
@@ -164,6 +184,7 @@ def main() -> None:
     except KeyboardInterrupt:
         log.info("Shutting down")
         server.stop(grace=1)
+        scheduler.stop()
 
 
 if __name__ == "__main__":

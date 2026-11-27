@@ -77,12 +77,17 @@ understand it.
 - On one machine the coordinator, client and workers compete for 4 cores; some workers run visibly slower. Real speedup numbers should come from the multi-laptop run (step 22).
 
 ### Phase 3 — Fault tolerance (≈1.5–2 h)
-- [ ] 13. Heartbeat monitor: worker marked *suspected dead* after a timeout (e.g. 6 s).
-- [ ] 14. Re-assignment: a dead worker's tiles go back to pending; tasks also have a lease timeout (catches stuck-but-alive workers).
-- [ ] 15. Idempotence and dedup: results for already-done tasks are ignored by `task_id`.
-- [ ] 16. Retry limit: a tile that fails too often is marked failed.
-- [ ] 17. Failure injection: worker flag `--crash-after N`; also test a real kill.
-- [ ] 18. Fault tests: kill a worker mid-job; job completes and output still matches the sequential version.
+- [x] 13. Heartbeat monitor: a failure-detector thread in the coordinator marks a worker *suspected dead* after 6 s without a heartbeat (`--heartbeat-timeout`). A suspected worker that speaks again is marked alive.
+- [x] 14. Re-assignment: a suspected worker's tiles go back to the **front** of the queue; tiles also have a 30 s lease (`--lease-timeout`) for stuck-but-alive workers. Workers report processing errors (`TaskResult.error`) so the tile is re-sent immediately.
+- [x] 15. Idempotence and dedup: first result for a `task_id` wins; later copies are ignored (also covers a "dead" worker that was only slow).
+- [x] 16. Retry limit: a tile handed out 3 times (`--max-attempts`) without a result fails its job; other jobs continue. A tile is not given back to a worker that already failed it while another live worker can take it (otherwise one broken worker burns all retries by itself).
+- [x] 17. Failure injection: worker flags `--crash-after N` (dies abruptly holding a tile) and `--slow SECONDS` (straggler).
+- [x] 18. Fault tests: fake-clock unit tests (`test_fault_tolerance.py`) and real-gRPC tests where workers crash or fail mid-job (`test_worker_failures.py`). Live run: 4 worker processes, one crashes after 20 tiles, one hard-killed mid-job → 3 tiles re-sent, result matches sequential. 234 tests pass.
+
+**Phase 3 findings:**
+- Recovery cost ≈ the heartbeat timeout: the live run took 7.4 s instead of ~1 s because the last tiles waited 6 s for the failed workers to be suspected. Shorter timeouts recover faster but risk suspecting workers that are only slow (L10 trade-off; this is the "kill a worker" experiment).
+- With pipelining, a result still in flight when a worker dies is lost; the coordinator re-sends that tile, so correctness is unaffected.
+- Possible extension (not in scope): speculative "backup" copies of the last in-flight tiles when the queue is empty, as MapReduce does for stragglers.
 
 ### Phase 4 — Measurements and experiments (≈1 h to build + 2–4 h to run)
 - [ ] 19. Metrics: per-tile timing, which worker, total job time → CSV.

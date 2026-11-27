@@ -73,6 +73,7 @@ message TaskResult {
   int32 tile_index = 4;
   ImageData core = 5;         // filtered pixels with the halo already cropped off
   double process_seconds = 6; // time the worker spent filtering
+  string error = 7;           // non-empty = the worker could not process this tile
 }
 message SubmitReply {
   bool accepted = 1;   // false if this result was a duplicate or for an unknown job
@@ -112,6 +113,7 @@ message StatusReply {
   double merge_seconds = 8;
   double total_seconds = 9;      // job submitted -> merged result ready
   string error = 10;
+  int32 reassigned_tiles = 11;   // tiles re-queued after a worker failure, error or timeout
 }
 
 message ResultRequest {

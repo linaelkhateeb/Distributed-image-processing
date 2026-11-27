@@ -6,6 +6,10 @@ Usage:
 
 A background thread sends a heartbeat every couple of seconds so the coordinator knows this
 worker is alive (the coordinator uses that to detect failed workers).
+
+Failure injection, for testing and demos:
+    --crash-after N   die abruptly (no goodbye, no result) while holding tile N+1
+    --slow SECONDS    add a delay to every tile (a straggler)
 """
 
 from __future__ import annotations
@@ -36,6 +40,10 @@ from common.tiling import crop_halo
 log = logging.getLogger("worker")
 
 
+class WorkerCrashed(Exception):
+    """Raised by an in-process simulated crash (tests). Real processes use os._exit."""
+
+
 class Worker:
     def __init__(
         self,
@@ -43,6 +51,8 @@ class Worker:
         worker_id: Optional[str] = None,
         poll_interval: float = 0.05,
         prefetch: int = 1,
+        crash_after: Optional[int] = None,
+        slow: float = 0.0,
     ):
         self.address = normalize_address(coordinator)
         self.hostname = socket.gethostname()
@@ -51,8 +61,11 @@ class Worker:
         # How many task requests to keep in flight while filtering the current tile.
         # 0 = strictly one-at-a-time (request, filter, submit, repeat).
         self.prefetch = prefetch
+        self.crash_after = crash_after
+        self.slow = slow
         self.heartbeat_interval = 2.0
         self.tiles_done = 0
+        self.crashed = threading.Event()
         self._channel = grpc.insecure_channel(self.address, options=GRPC_OPTIONS)
         self._stub = pb_grpc.CoordinatorStub(self._channel)
 
@@ -80,7 +93,7 @@ class Worker:
         return False
 
     def _heartbeat_loop(self, stop: threading.Event) -> None:
-        while not stop.wait(self.heartbeat_interval):
+        while not stop.wait(self.heartbeat_interval) and not self.crashed.is_set():
             try:
                 reply = self._stub.Heartbeat(
                     pb.HeartbeatRequest(worker_id=self.worker_id), timeout=5
@@ -95,21 +108,46 @@ class Worker:
     # ------------------------------------------------------------------ work
 
     def process(self, reply: "pb.TaskReply") -> "pb.TaskResult":
-        """Filter one tile and crop its halo. Pure computation, no networking."""
-        data = from_image_data(reply.data)
-        tile = tile_from_info(reply.tile, data)
+        """Filter one tile and crop its halo. Pure computation, no networking.
+
+        If filtering fails, the result carries an ``error`` instead of pixels so the coordinator
+        can give the tile to another worker straight away.
+        """
         start = time.perf_counter()
-        filtered = get_filter(reply.filter_name)(data)
-        core = crop_halo(filtered, tile)
-        seconds = time.perf_counter() - start
+        try:
+            data = from_image_data(reply.data)
+            tile = tile_from_info(reply.tile, data)
+            filtered = get_filter(reply.filter_name)(data)
+            core = crop_halo(filtered, tile)
+            if self.slow:
+                time.sleep(self.slow)
+        except Exception as exc:
+            log.exception("Failed to process %s", reply.task_id)
+            return pb.TaskResult(
+                worker_id=self.worker_id,
+                task_id=reply.task_id,
+                job_id=reply.job_id,
+                tile_index=reply.tile.index,
+                error=f"{type(exc).__name__}: {exc}",
+            )
         return pb.TaskResult(
             worker_id=self.worker_id,
             task_id=reply.task_id,
             job_id=reply.job_id,
             tile_index=reply.tile.index,
             core=to_image_data(core),
-            process_seconds=seconds,
+            process_seconds=time.perf_counter() - start,
         )
+
+    def crash(self) -> None:
+        """Simulated hard failure: stop instantly, without sending a result or a goodbye.
+
+        In a real process this kills the process (like pulling the plug). Tests running workers
+        as threads override this to stop just this worker.
+        """
+        log.error("Simulated crash after %d tiles (holding one more tile)", self.tiles_done)
+        logging.shutdown()
+        os._exit(1)
 
     def run(self, stop: Optional[threading.Event] = None) -> None:
         """Main loop. Returns when ``stop`` is set (or on Ctrl+C when run from main)."""
@@ -131,34 +169,44 @@ class Worker:
             while len(requests) < n:
                 requests.append(self._stub.RequestTask.future(request, timeout=10))
 
-        while not stop.is_set():
-            try:
-                t0 = time.perf_counter()
-                keep_requests_in_flight(1)
-                reply = requests.popleft().result()
-                if not reply.has_task:
-                    stop.wait(self.poll_interval)
-                    continue
-                t1 = time.perf_counter()
-                keep_requests_in_flight(self.prefetch)  # ask for the next tile(s) now
-                result = self.process(reply)
-                t2 = time.perf_counter()
-                if self.prefetch == 0:
-                    self._stub.SubmitResult(result, timeout=30)
-                else:
-                    submits.append(self._stub.SubmitResult.future(result, timeout=30))
-                    # Collect finished submits (raises if one failed); cap how many are pending.
-                    while submits and (submits[0].done() or len(submits) > 2):
-                        submits.popleft().result()
-                t3 = time.perf_counter()
-                self.tiles_done += 1
-                log.debug("%s: wait %.1f ms, filter %.1f ms, submit %.1f ms",
-                          reply.task_id, (t1 - t0) * 1000, (t2 - t1) * 1000, (t3 - t2) * 1000)
-            except grpc.RpcError as exc:
-                log.warning("Coordinator call failed (%s); retrying in 1 s", exc.code().name)
-                requests.clear()
-                submits.clear()
-                stop.wait(1.0)
+        try:
+            while not stop.is_set():
+                try:
+                    t0 = time.perf_counter()
+                    keep_requests_in_flight(1)
+                    reply = requests.popleft().result()
+                    if not reply.has_task:
+                        stop.wait(self.poll_interval)
+                        continue
+                    if self.crash_after is not None and self.tiles_done >= self.crash_after:
+                        self.crashed.set()
+                        self.crash()  # dies holding this tile: the coordinator must recover it
+                    t1 = time.perf_counter()
+                    keep_requests_in_flight(self.prefetch)  # ask for the next tile(s) now
+                    result = self.process(reply)
+                    t2 = time.perf_counter()
+                    if self.prefetch == 0:
+                        self._stub.SubmitResult(result, timeout=30)
+                    else:
+                        submits.append(self._stub.SubmitResult.future(result, timeout=30))
+                        # Collect finished submits (raises if one failed); cap how many pend.
+                        while submits and (submits[0].done() or len(submits) > 2):
+                            submits.popleft().result()
+                    t3 = time.perf_counter()
+                    if not result.error:
+                        self.tiles_done += 1
+                    log.debug("%s: wait %.1f ms, filter %.1f ms, submit %.1f ms",
+                              reply.task_id, (t1 - t0) * 1000, (t2 - t1) * 1000,
+                              (t3 - t2) * 1000)
+                except grpc.RpcError as exc:
+                    log.warning("Coordinator call failed (%s); retrying in 1 s",
+                                exc.code().name)
+                    requests.clear()
+                    submits.clear()
+                    stop.wait(1.0)
+        except WorkerCrashed:
+            self._channel.close()
+            return
 
         for fut in submits:  # let the last results reach the coordinator
             try:
@@ -179,6 +227,10 @@ def main() -> None:
     parser.add_argument("--prefetch", type=int, default=1,
                         help="task requests kept in flight while filtering (default 1; "
                              "0 = no pipelining)")
+    parser.add_argument("--crash-after", type=int, default=None, metavar="N",
+                        help="failure injection: die abruptly after N tiles")
+    parser.add_argument("--slow", type=float, default=0.0, metavar="SECONDS",
+                        help="failure injection: extra delay per tile (straggler)")
     parser.add_argument("--verbose", action="store_true",
                         help="log timing for every tile (wait / filter / submit)")
     args = parser.parse_args()
@@ -187,7 +239,8 @@ def main() -> None:
                         format="%(asctime)s.%(msecs)03d %(name)s: %(message)s",
                         datefmt="%H:%M:%S")
     set_opencv_threads(args.threads)
-    worker = Worker(args.coordinator, args.id, prefetch=args.prefetch)
+    worker = Worker(args.coordinator, args.id, prefetch=args.prefetch,
+                    crash_after=args.crash_after, slow=args.slow)
     stop = threading.Event()
     try:
         worker.run(stop)

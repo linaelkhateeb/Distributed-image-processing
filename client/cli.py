@@ -86,8 +86,9 @@ def _print_progress(status: "pb.StatusReply") -> None:
     width = 30
     filled = int(width * status.done_tiles / total)
     bar = "#" * filled + "-" * (width - filled)
+    requeued = f"  ({status.reassigned_tiles} re-sent)" if status.reassigned_tiles else ""
     print(f"\r[{bar}] {status.done_tiles}/{status.total_tiles} tiles  "
-          f"{status.total_seconds:6.2f} s", end="", flush=True)
+          f"{status.total_seconds:6.2f} s{requeued}", end="", flush=True)
 
 
 def cmd_submit(args: argparse.Namespace) -> int:
@@ -116,6 +117,9 @@ def cmd_submit(args: argparse.Namespace) -> int:
           f"merge {status.merge_seconds * 1000:.1f} ms)")
     for worker_id, count in sorted(status.tiles_per_worker.items()):
         print(f"  {worker_id}: {count} tiles")
+    if status.reassigned_tiles:
+        print(f"  {status.reassigned_tiles} tile(s) were re-sent to another worker after a "
+              f"failure or timeout")
 
     save_image(output, result)
     print(f"Saved result to {output}")
@@ -146,9 +150,9 @@ def cmd_workers(args: argparse.Namespace) -> int:
     if not reply.workers:
         print("No workers registered.")
         return 0
-    print(f"{'worker':<28} {'host':<20} {'alive':<6} {'last heartbeat':>15} {'tiles':>7}")
+    print(f"{'worker':<28} {'host':<20} {'alive':<9} {'last heartbeat':>15} {'tiles':>7}")
     for w in reply.workers:
-        print(f"{w.worker_id:<28} {w.hostname:<20} {'yes' if w.alive else 'NO':<6} "
+        print(f"{w.worker_id:<28} {w.hostname:<20} {'yes' if w.alive else 'SUSPECT':<9} "
               f"{w.seconds_since_heartbeat:>13.1f} s {w.tiles_done:>7}")
     return 0
 

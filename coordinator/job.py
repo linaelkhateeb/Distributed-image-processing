@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
@@ -29,6 +29,9 @@ class Job:
     state: str = JobState.RUNNING
     cores: Dict[int, np.ndarray] = field(default_factory=dict)  # tile index -> filtered core
     tiles_per_worker: Counter = field(default_factory=Counter)
+    attempts: Counter = field(default_factory=Counter)  # tile index -> times handed out
+    failed_on: Dict[int, Set[str]] = field(default_factory=dict)  # tile -> workers that errored
+    reassigned_tiles: int = 0  # tiles put back in the queue after a failure or timeout
     merging: bool = False
     split_seconds: float = 0.0
     last_result_at: Optional[float] = None

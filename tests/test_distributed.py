@@ -34,6 +34,7 @@ def cluster(request):
     for t in threads:
         t.join(timeout=5)
     server.stop(grace=None)
+    scheduler.stop()
 
 
 @pytest.mark.parametrize("filter_name", ["grayscale", "blur", "sobel", "median_heavy"])
