@@ -60,14 +60,21 @@ understand it.
 - [x] 7. Correctness tests: split → filter → merge equals the sequential output pixel for pixel, for every filter, 5 tile sizes and 3 image shapes; plus a test showing that without the halo, neighbourhood filters produce seams. 190 tests pass.
 
 ### Phase 2 — Distributed system, happy path (≈2–3 h)
-- [ ] 8. gRPC interface (`image_service.proto`):
+- [x] 8. gRPC interface (`common/proto/image_service.proto`, Python code generated automatically by `common/rpc.py`):
   - Worker → coordinator: `RegisterWorker`, `RequestTask` (pull), `SubmitResult(task_id, tile)`, `Heartbeat`
-  - Client → coordinator: `SubmitJob`, `GetStatus`, `GetResult`
-  - Raise the 4 MB default message limit.
-- [ ] 9. Coordinator: job registry, task queue with unique `task_id`s, per-task state (pending → assigned(worker, time) → done); merge when all tiles of a job are done.
-- [ ] 10. Worker: pull → filter → submit loop, plus a heartbeat thread; takes a worker ID and the coordinator address.
-- [ ] 11. CLI client: `submit image.png --filter blur`, poll progress, save the result and a before/after image.
-- [ ] 12. End-to-end run on one machine: coordinator + 3–4 workers; output matches the sequential version.
+  - Client → coordinator: `SubmitJob`, `GetStatus`, `GetResult`, `ListWorkers`
+  - Pixels sent raw (no PNG encoding); message limit raised to 512 MB.
+- [x] 9. Coordinator (`coordinator/scheduler.py`, `job.py`, `server.py`): job registry, FIFO task queue, task id `<job_id>:<tile_index>`, assignments tracked; merge when all tiles are in. Duplicate results already ignored (part of step 15).
+- [x] 10. Worker: pull → filter → submit loop with a heartbeat thread. **Pipelining (`--prefetch`, default 1)**: the next tile is requested while the current one is filtered and results are submitted in the background, hiding gRPC latency.
+- [x] 11. CLI client: `submit` (progress bar, timings, tiles per worker, result + before/after image, `--verify`) and `workers`.
+- [x] 12. End-to-end run on one machine: coordinator + 4 worker processes; results match the sequential version pixel for pixel. 218 tests pass.
+
+**Phase 2 findings (one laptop, i5-8300H, 4 cores / 8 threads, 4000x3000 image):**
+- A single empty gRPC call costs ~4.5 ms on this machine (Python gRPC on Windows), ~7 ms after a short idle. Each tile needs 2 calls, so with small/cheap tiles workers spent more time waiting than filtering.
+- Pipelining (prefetch 1) cut median_heavy with 1 worker from 5.15 s to 2.64 s; with 4 workers from 1.07 s to 0.87 s.
+- The single Python coordinator handles ~220 tiles/s, so it becomes the bottleneck with small tiles. Larger tiles help: median_heavy with 4 workers took 1.01 s (256 px) → 0.75 s (512 px) → 0.74 s (1024 px), vs ≈1.1 s sequential (≈1.5x).
+- Cheap filters (blur) are always slower distributed (0.33 s vs 0.02 s): moving 36 MB of pixels costs more than the filtering. Expected; this is the cheap-vs-expensive experiment.
+- On one machine the coordinator, client and workers compete for 4 cores; some workers run visibly slower. Real speedup numbers should come from the multi-laptop run (step 22).
 
 ### Phase 3 — Fault tolerance (≈1.5–2 h)
 - [ ] 13. Heartbeat monitor: worker marked *suspected dead* after a timeout (e.g. 6 s).

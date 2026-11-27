@@ -1,0 +1,136 @@
+// gRPC interface between the coordinator, the workers and the client.
+//
+// Workers PULL work: an idle worker calls RequestTask, filters the tile it gets, and calls
+// SubmitResult. A separate Heartbeat call tells the coordinator the worker is still alive.
+//
+// Images and tiles travel as raw uint8 pixels (ImageData), not PNG/JPEG, so no time is spent
+// encoding/decoding on every hop.
+
+syntax = "proto3";
+
+package imageproc;
+
+service Coordinator {
+  // ---- Worker -> coordinator ----
+  rpc RegisterWorker(RegisterRequest) returns (RegisterReply);
+  rpc RequestTask(TaskRequest) returns (TaskReply);
+  rpc SubmitResult(TaskResult) returns (SubmitReply);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatReply);
+
+  // ---- Client -> coordinator ----
+  rpc SubmitJob(JobRequest) returns (JobReply);
+  rpc GetStatus(StatusRequest) returns (StatusReply);
+  rpc GetResult(ResultRequest) returns (ResultReply);
+  rpc ListWorkers(ListWorkersRequest) returns (ListWorkersReply);
+}
+
+// Raw uint8 pixels in OpenCV layout: (height, width) or (height, width, channels).
+message ImageData {
+  bytes pixels = 1;
+  int32 height = 2;
+  int32 width = 3;
+  int32 channels = 4;  // 1 = grayscale, 3 = BGR
+}
+
+// Where a tile sits in the source image, and how much halo it carries.
+message TileInfo {
+  int32 index = 1;
+  int32 y = 2;
+  int32 x = 3;
+  int32 height = 4;     // core size
+  int32 width = 5;
+  int32 pad_top = 6;    // position of the core inside the padded tile data
+  int32 pad_left = 7;
+}
+
+// ---------------- Worker messages ----------------
+
+message RegisterRequest {
+  string worker_id = 1;
+  string hostname = 2;
+}
+message RegisterReply {
+  bool accepted = 1;
+  double heartbeat_interval = 2;  // seconds; coordinator tells workers how often to heartbeat
+}
+
+message TaskRequest {
+  string worker_id = 1;
+}
+message TaskReply {
+  bool has_task = 1;          // false = nothing to do right now, ask again shortly
+  string task_id = 2;         // "<job_id>:<tile_index>", same id if the tile is re-sent
+  string job_id = 3;
+  string filter_name = 4;
+  TileInfo tile = 5;
+  ImageData data = 6;         // core + halo
+}
+
+message TaskResult {
+  string worker_id = 1;
+  string task_id = 2;
+  string job_id = 3;
+  int32 tile_index = 4;
+  ImageData core = 5;         // filtered pixels with the halo already cropped off
+  double process_seconds = 6; // time the worker spent filtering
+}
+message SubmitReply {
+  bool accepted = 1;   // false if this result was a duplicate or for an unknown job
+}
+
+message HeartbeatRequest {
+  string worker_id = 1;
+}
+message HeartbeatReply {
+  bool known = 1;      // false = coordinator doesn't know this worker; it should re-register
+}
+
+// ---------------- Client messages ----------------
+
+message JobRequest {
+  ImageData image = 1;
+  string filter_name = 2;
+  int32 tile_size = 3;
+}
+message JobReply {
+  string job_id = 1;
+  int32 total_tiles = 2;
+  string error = 3;    // non-empty if the job was rejected
+}
+
+message StatusRequest {
+  string job_id = 1;
+}
+message StatusReply {
+  string job_id = 1;
+  string state = 2;              // RUNNING, DONE, FAILED, UNKNOWN
+  int32 total_tiles = 3;
+  int32 done_tiles = 4;
+  map<string, int32> tiles_per_worker = 5;
+  double split_seconds = 6;
+  double processing_seconds = 7; // job submitted -> last tile result received
+  double merge_seconds = 8;
+  double total_seconds = 9;      // job submitted -> merged result ready
+  string error = 10;
+}
+
+message ResultRequest {
+  string job_id = 1;
+}
+message ResultReply {
+  bool ready = 1;
+  ImageData image = 2;
+  string error = 3;
+}
+
+message ListWorkersRequest {}
+message WorkerStatus {
+  string worker_id = 1;
+  string hostname = 2;
+  double seconds_since_heartbeat = 3;
+  int32 tiles_done = 4;
+  bool alive = 5;
+}
+message ListWorkersReply {
+  repeated WorkerStatus workers = 1;
+}

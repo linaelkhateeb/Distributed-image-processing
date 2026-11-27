@@ -66,4 +66,45 @@ truly sequential.
 Filters: `grayscale`, `invert`, `blur`, `blur_heavy`, `sharpen`, `sobel`, `median`,
 `median_heavy`.
 
-Run instructions for the coordinator, workers and client will be added as they are built.
+## Running the distributed system
+
+Each command runs in its own terminal, with the venv active. The gRPC code is generated
+automatically the first time.
+
+**1. Coordinator** (prints the addresses workers can connect to):
+
+```powershell
+python -m coordinator.server
+```
+
+**2. Workers** (start as many as you like; on the same machine or on others):
+
+```powershell
+python -m worker.worker
+python -m worker.worker --coordinator 192.168.1.10
+```
+
+Useful options: `--id NAME`, `--prefetch N` (task requests kept in flight while filtering;
+default 1, `0` disables pipelining), `--verbose` (per-tile timings).
+
+**3. Client:**
+
+```powershell
+python -m client.cli workers
+python -m client.cli submit data/input/sample.png --filter median_heavy --tile-size 512 --verify
+```
+
+`submit` shows a progress bar, the timings and how many tiles each worker did, saves the result
+and a before/after image in `data/output/`, and with `--verify` checks the result against the
+sequential version. Add `--coordinator HOST[:PORT]` when the coordinator is on another machine.
+
+### Several machines
+
+All machines on the same network, each with the project and venv set up. On the coordinator
+machine, allow the port through Windows Firewall once (PowerShell as administrator):
+
+```powershell
+New-NetFirewallRule -DisplayName "Image coordinator" -Direction Inbound -Protocol TCP -LocalPort 50051 -Action Allow
+```
+
+Then start workers on the other machines with `--coordinator <coordinator IP>`.
